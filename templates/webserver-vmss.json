@@ -1,0 +1,323 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "scaleSetName":{
+            "type": "string"
+        },
+        "keyVaultName":{
+            "type": "string"
+        },
+        "keyVaultResourceGroup": {
+            "type": "string"
+        },
+        "adminSecretName": {
+            "type": "string"
+        },
+        "adminUserName": {
+            "type": "string",
+            "defaultValue": "LocalAdmin"
+        },
+        "adminPassword": {
+            "type": "securestring",
+            "defaultValue": {
+                "reference":{
+                    "keyVault": {
+                        "id": "[variables('keyVaultId')]"
+                    },
+                    "secretName": "[parameters('adminSecretName')]"
+                }
+            }
+        },
+        "computeNamePrefix": {
+            "type": "string",
+            "metadata": {
+                "description": "Name to append to the front of the array of compute objects created"
+            }
+        },
+        "computeSku": {
+            "type": "string",
+            "metadata": {
+                "description": "Compute SKU for the Scaleset, i.e. Standard_D2_v3"
+            },
+            "defaultValue": "Standard_D2_v3"
+        }, 
+        "initialCapacity": {
+            "type": "int",
+            "defaultValue": 2
+        },
+        "upgradeMode": {
+            "type": "string",
+            "allowedValues": [
+                "Manual",
+                "Automatic"
+            ],
+            "defaultValue": "Automatic",
+            "metadata": {
+                "description": "Specifies the mode of an upgrade to virtual machines in the scale set."
+            }
+        },
+        "timeZone": {
+            "type": "string",
+            "defaultValue": "Pacific Standard Time"
+        },
+        "automaticUpdates": {
+            "type": "bool",
+            "defaultValue": true,
+            "metadata": {
+                "description": "Whether OS upgrades will be installed automatically"
+            }
+        }, 
+        "vnetName": {
+            "type": "string"
+        },
+        "subnetName": {
+            "type": "string"
+        },
+        "networkResourceGroup": {
+            "type": "string"
+        }, 
+        "dnsLabel": {
+            "type": "string"
+        },
+        "automationAccountName": {
+            "type": "string"
+        },
+        "automationAccountResourceGroup": {
+            "type": "string"
+        },
+        "dscNodeConfigurationName": {
+            "type": "string",
+            "defaultValue": "Web.Server"
+        }
+    },
+    "variables": {
+        "scaleSetName": "[toLower(substring(concat(parameters('scaleSetName'), uniqueString(resourceGroup().id)), 0, 9))]",
+        "vnetId": "[resourceId(subscription().id, parameters('networkResourceGroup'), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]",
+        "subnetId": "[concat(variables('vnetId'), '/subnets/', parameters('subnetName'))]",
+        "keyVaultId": "[resourceId(parameters('keyVaultResourceGroup'), 'Microsoft.KeyVault', parameters('keyVaultName'))]",
+        "publicIPAddressName": "[concat(variables('scaleSetName'), 'publicIP')]",
+        "loadBalancerName": "[concat(variables('scaleSetName'), 'lb')]"
+    },
+    "resources": [
+        {
+            "name": "[variables('scaleSetName')]",
+            "type": "Microsoft.Compute/virtualMachineScaleSets",
+            "apiVersion": "2017-03-30",
+            "location": "[resourceGroup().location]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/loadBalancers', variables('loadBalancerName'))]",
+                "[concat(parameters('networkResourceGroup'), 'Microsoft.Network/virtualNetworks', parameters('vnetName'))]"
+            ],
+            "tags": {},
+            "sku": {
+                "name": "[parameters('computeSku')]",
+                "tier": "Standard",
+                "capacity": "[parameters('initialCapacity')]"
+            },
+            "properties":{
+                "upgradePolicy": {
+                    "mode": "[parameters('upgradeMode')]"
+                },
+                "virtualMachineProfile":{
+                    "storageProfile":{
+                        "imageReference":{
+                            "publisher": "MicrosoftWindowsServer",
+                            "offer": "WindowsServer",
+                            "sku": "2016-Datacenter",
+                            "version": "latest"
+                        },
+                        "osDisk":{
+                            "createOption":"FromImage",
+                            "caching": "ReadOnly",
+                            "managedDisk":{
+                                "storageAccountType":"Premium_LRS"
+                            }
+                        }
+                    },
+                    "osProfile":{
+                        "computerNamePrefix": "[parameters('computeNamePrefix')]",
+                        "adminUsername": "[parameters('adminUserName')]",
+                        "adminPassword": "[parameters('adminPassword')]",
+                        "windowsConfiguration":{
+                            "enableAutomaticUpdates": "[parameters('automaticUpdates')]",
+                            "timeZone": "[parameters('timeZone')]"
+                        }
+                    },
+                    "networkProfile":{
+                        "networkInterfaceConfigurations":[
+                            {
+                                "name": "[concat(variables('scaleSetName'), 'NIC')]",
+                                "properties":{
+                                    "primary":true,
+                                    "ipConfigurations":[
+                                        {
+                                            "name": "[concat(variables('scaleSetName'), 'ipConfig')]",
+                                            "properties":{
+                                                "subnet":{
+                                                    "id": "[variables('subnetId')]"
+                                                },
+                                                "loadBalancerBackendAddressPools":[
+                                                    {
+                                                        "id": "[resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName'), '/backendAddressPools/', concat(variables('scaleSetName'), 'bePool'))]"
+                                                    }
+                                                ],
+                                                "loadBalancerInboundNatPools":[
+                                                    {
+                                                        "id": "[resourceId('Microsoft.Network/loadbalancers', variables('loadBalancerName'), '/inboundNatPools/', concat(variables('scaleSetName'), 'inboundNAT'))]"
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    },
+                    "extensionProfile":{
+                        "extensions":[
+                            {
+                                "name": "Microsoft.PowerShell.DSC",
+                                "properties":{
+                                    "publisher": "Microsoft.PowerShell",
+                                    "type": "DSC",
+                                    "typeHandlerVersion": "2.9",
+                                    "autoUpgradeMinorVersion":true,
+                                    "protectedSettings":{
+                                        "Items": {
+                                            "registrationKeyPrivate": "[listkeys(resourceId(parameters('automationAccountResourceGroup'), 'Microsoft.Automation/automationAccounts/', parameters('automationAccountName')), '2018-01-15').keys[0].value]"
+                                        }
+                                    }
+                                },
+                                "settings":{
+                                    "Properties":[
+                                        {
+                                            "Name": "RegistrationKey",
+                                            "Value": {
+                                                "UserName": "PLACEHOLDER_DONOTUSE",
+                                                "Password": "PrivateSettingsRef:registrationKeyPrivate"
+                                            },
+                                            "TypeName": "System.Management.Automation.PSCredential"
+                                        },
+                                        {
+                                            "Name": "RegistrationUrl",
+                                            "Value": "[reference(concat(parameters('automationAccountResourceGroup'), 'Microsoft.Automation/automationAccounts/', parameters('automationAccountName'))).registrationUrl]",
+                                            "TypeName": "System.String"
+                                        },
+                                        {
+                                            "Name": "NodeConfigurationName",
+                                            "Value": "[parameters('dscNodeConfigurationName')]",
+                                            "TypeName": "System.String"
+                                        },
+                                        {
+                                            "Name": "ConfigurationMode",
+                                            "Value": "ApplyandAutoCorrect",
+                                            "TypeName": "System.String"
+                                        },
+                                        {
+                                            "Name": "RebootNodeIfNeeded",
+                                            "Value": true,
+                                            "TypeName": "System.Boolean"
+                                        },
+                                        {
+                                            "Name": "ActionAfterReboot",
+                                            "Value": "ContinueConfiguration",
+                                            "TypeName": "System.String"
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            } 
+        },
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "name": "[variables('publicIPAddressName')]",
+            "location": "[resourcegroup().location]",
+            "apiVersion": "2016-03-30",
+            "properties": {
+              "publicIPAllocationMethod": "Static",
+              "dnsSettings": {
+                "domainNameLabel": "[parameters('dnsLabel')]"
+              }
+            }
+          },
+          {
+            "type": "Microsoft.Network/loadBalancers",
+            "name": "[variables('loadBalancerName')]",
+            "location": "[resourcegroup().location]",
+            "apiVersion": "2016-03-30",
+            "dependsOn": [
+              "[concat('Microsoft.Network/publicIPAddresses/', variables('publicIPAddressName'))]"
+            ],
+            "properties": {
+              "frontendIPConfigurations": [
+                {
+                  "name": "LoadBalancerFrontEnd",
+                  "properties": {
+                    "publicIPAddress": {
+                      "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]"
+                    }
+                  }
+                }
+              ],
+              "backendAddressPools": [
+                {
+                  "name": "[concat(variables('scaleSetName'), 'bePool')]"
+                }
+              ],
+              "inboundNatPools": [
+                {
+                  "name": "[concat(variables('scaleSetName'), 'inboundNAT')]",
+                  "properties": {
+                    "frontendIPConfiguration": {
+                      "id": "[resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName'), '/frontendIPConfigurations/loadBalancerFrontEnd')]"
+                    },
+                    "protocol": "tcp",
+                    "frontendPortRangeStart": 5000,
+                    "frontendPortRangeEnd": 50119,
+                    "backendPort": 3389
+                  }
+                }
+              ],
+              "loadBalancingRules": [
+                {
+                  "name": "LBRule",
+                  "properties": {
+                    "frontendIPConfiguration": {
+                      "id": "[resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName'), '/frontendIPConfigurations/loadBalancerFrontEnd')]"
+                    },
+                    "backendAddressPool": {
+                      "id": "[resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName'), '/backendAddressPools/', concat(variables('scaleSetName'), 'bePool'))]"
+                    },
+                    "protocol": "Tcp",
+                    "frontendPort": 80,
+                    "backendPort": 80,
+                    "enableFloatingIP": false,
+                    "idleTimeoutInMinutes": 5,
+                    "probe": {
+                      "id": "[resourceId('Microsoft.Network/loadBalancers', concat(variables('loadBalancerName'), '/probes/tcpProbe'))]"
+                    }
+                  }
+                }
+              ],
+              "probes": [
+                {
+                  "name": "tcpProbe",
+                  "properties": {
+                    "protocol": "Tcp",
+                    "port": 80,
+                    "intervalInSeconds": 5,
+                    "numberOfProbes": 2
+                  }
+                }
+              ]
+            }
+          }
+    ],
+    "outputs": {
+
+    }
+}
